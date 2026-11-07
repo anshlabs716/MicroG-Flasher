@@ -1,0 +1,6 @@
+id=MicroG_Flasher
+name=MicroG Flasher
+version=v0.1.0
+versionCode=1
+author=anshlabs716
+description=Actually flashes microG. Downloads the latest official, signed microG apks (GmsCore + FakeStore) straight from the microG GitHub releases at install time, and installs them systemlessly as privileged system apps with the right permission allowlists. Requires a ROM with (microG) signature spoofing support - most custom ROMs since 2024 have it built in.
