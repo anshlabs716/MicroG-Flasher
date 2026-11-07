@@ -34,7 +34,12 @@ microG needs **signature spoofing**. Since Feb 2024, many ROMs ship "microG-tied
 | --- | --- |
 | LineageOS (2024-02+), e/OS, CalyxOS, iodéOS, DivestOS, most LineageOS forks | ✅ Works out of the box |
 | Older custom ROMs with the classic spoofing toggle | ✅ Enable spoofing for microG in ROM settings |
+| **GApps ROM** (real Google Play services present) | ✅ The installer offers to **mask real GMS systemlessly** (Vol+ at the prompt) so microG owns `com.google.android.gms`. Reversible: disable the module and stock GMS is back. |
 | Stock ROM / ROM without spoofing | ⚠️ Installs, but Google-signature-checking apps break. Add spoofing with **LSPosed + FakeGApps** (Android ≤ 15). Stock Android 16: no supported path yet. |
+
+### Debugging an install
+
+Every install appends a log to `/sdcard/MicroG-Flasher-install.log` — if a flash "does nothing", check that file first.
 | ROM with real Google Play Services installed | ⚠️ Not recommended — the module warns at install. Degoogled ROMs are the target. |
 
 The definitive check is always the microG **Self-Check** page, not third-party signature checker apps.
