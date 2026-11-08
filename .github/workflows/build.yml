@@ -28,3 +28,5 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: dist/*.zip
+          # tags like v0.0.2-beta are pre-releases until stable
+          prerelease: ${{ contains(github.ref, 'beta') }}
