@@ -3,17 +3,17 @@
 # MicroG-Flasher
 # Downloads the latest official microG apks from GitHub at install time
 # and installs them systemlessly as privileged system apps.
+# Masks real/Canta-removed Google packages so microG owns the names.
 #
-# Offline fallback: pre-push the apks to /sdcard/MicroG-Flasher/
-#   adb push com.google.android.gms.apk  /sdcard/MicroG-Flasher/
-#   adb push com.android.vending.apk     /sdcard/MicroG-Flasher/
+# Offline fallback: push apks to /sdcard/MicroG-Flasher/ (or Download):
+#   adb push com.google.android.gms-252432034.apk  /sdcard/MicroG-Flasher/
+#   adb push com.android.vending-84022634.apk      /sdcard/MicroG-Flasher/
 #################
 
 SKIPUNZIP=1
 
 API="https://api.github.com/repos/microg/GmsCore/releases/latest"
-GMS_NAME="com.google.android.gms.apk"
-VENDING_NAME="com.android.vending.apk"
+PAGE_URL="https://github.com/microg/GmsCore/releases/latest"
 LOG="/sdcard/MicroG-Flasher-install.log"
 echo "=== MicroG Flasher install $(date) ===" >> "$LOG" 2>/dev/null
 
@@ -30,47 +30,134 @@ die() {
   abort "! $1"
 }
 
-# Volume-key prompt (idea from google_reinstall_module).
-# Returns 0 = Vol+ (yes), 1 = Vol- (no). Falls back to 0 on no input.
+# Volume-key prompt. 0 = Vol+ (yes), 1 = Vol- (no). Defaults to yes so a
+# headless install is never stuck for minutes waiting for input.
 choose() {
-  [ "$1" ] && local delay=$1 || local delay=8
   local count=0
-  while [ $count -le 12 ]; do
-    timeout $delay /system/bin/getevent -lqc 1 2>&1 > "$TMPDIR/events" &
-    sleep 0.5
-    count=$((count + 1))
+  say "  (Vol+ = yes, Vol- = abort; continuing in ~8s)"
+  while [ $count -lt 4 ]; do
+    timeout 2 /system/bin/getevent -lqc 1 > "$TMPDIR/events" 2>/dev/null
     if grep -q 'KEY_VOLUMEUP *DOWN' "$TMPDIR/events" 2>/dev/null; then
       return 0
     elif grep -q 'KEY_VOLUMEDOWN *DOWN' "$TMPDIR/events" 2>/dev/null; then
       return 1
     fi
+    count=$((count + 1))
   done
   say "- No key press detected, continuing"
   return 0
 }
 
-# Hide a system package systemlessly by replacing its containing
-# directory with an empty .replace stub (Magisk magic mount).
-mask_dir() {
-  local d="$1" rel mdir
-  case "$d" in
-    # module "system/" maps onto the /system partition itself;
-    # product/system_ext/vendor keep their name under system/
-    /system/*) rel="${d#/system}" ;;
-    *)         rel="$d" ;;
-  esac
-  mdir="$MODPATH/system$rel"
-  [ -f "$mdir/.replace" ] && return 0
-  mkdir -p "$mdir"
-  touch "$mdir/.replace"
-  say "- Masked $(basename "$d") ($d)"
+# Robust downloader: curl, then wget, then Magisk's own busybox. Retries.
+fetch() {
+  local try
+  for try in 1 2 3; do
+    if command -v curl >/dev/null 2>&1; then
+      curl -L --fail --connect-timeout 15 --max-time 900 \
+        -o "$2" "$1" >/dev/null 2>&1 && return 0
+    fi
+    if command -v wget >/dev/null 2>&1; then
+      wget -q -O "$2" "$1" >/dev/null 2>&1 && return 0
+    fi
+    if [ -x /data/adb/magisk/busybox ]; then
+      /data/adb/magisk/busybox wget -q -O "$2" "$1" >/dev/null 2>&1 && return 0
+    fi
+    sleep 2
+  done
+  return 1
 }
 
-# Global list (space separated) of dirs to mask. Accumulated via globals
-# on purpose - no command substitution, so say() output can never leak
-# into the list.
-MASK_DIRS=""
+# Sanity check: non-empty, plausible size, and actually a zip (PK header)
+check_apk() {
+  local f="$1" min="$2"
+  [ -f "$f" ] || return 1
+  local size
+  size=$(wc -c < "$f")
+  [ "$size" -ge "$min" ] || return 1
+  [ "$(dd if="$f" bs=2 count=1 2>/dev/null)" = "PK" ] || return 1
+  return 0
+}
 
+# Find an apk on internal storage. $1 = package name prefix,
+# $2 = minimum size. Result in $REPLY. Skips -hw/-user variants.
+find_local_apk() {
+  local d f base
+  for d in /sdcard/MicroG-Flasher /sdcard/Download /sdcard; do
+    for f in "$d/$1"-*.apk "$d/$1.apk"; do
+      base="$(basename "$f")"
+      case "$base" in
+        *-hw.apk|*-user.apk) continue ;;
+      esac
+      if check_apk "$f" "$2"; then REPLY="$f"; return 0; fi
+    done
+  done
+  return 1
+}
+
+# ---------------- banner + guards ----------------
+
+say " "
+say "- MicroG Flasher"
+
+if [ "$BOOTMODE" != "true" ]; then
+  say "! Custom recovery flashing is not supported yet."
+  die "Install from the Magisk app (network needed for the download)."
+fi
+
+if [ -n "$MAGISK_VER_CODE" ]; then
+  if [ "$MAGISK_VER_CODE" -lt 24000 ] 2>/dev/null; then
+    die "Magisk v24.0+ required"
+  fi
+fi
+
+SDK=$(getprop ro.build.version.sdk)
+if [ -z "$SDK" ] || [ "$SDK" -lt 26 ] 2>/dev/null; then
+  die "Android 8.0 (SDK 26) or newer required"
+fi
+say "- Android SDK: $SDK"
+
+# Free space on /data (module lives there). GmsCore is ~110 MB.
+FREE_KB=$(df -k /data 2>/dev/null | tail -n 1 | tr -s ' ' | cut -d ' ' -f4)
+if [ -n "$FREE_KB" ] && [ "$FREE_KB" -lt 262144 ] 2>/dev/null; then
+  say "! Less than 256 MB free on /data"
+  die "microG needs ~120 MB. Free up space and retry."
+fi
+
+# ---------------- module files ----------------
+
+say "- Extracting module files"
+unzip -oq "$ZIPFILE" -d "$MODPATH" \
+  'module.prop' 'system/*' 'service.sh' 'action.sh' 'uninstall.sh' \
+  'post-fs-data.sh' >/dev/null 2>&1
+[ -f "$MODPATH/module.prop" ] || die "Extraction failed"
+set_perm_recursive "$MODPATH/system" 0 0 0755 0644
+
+# ---------------- Google state detection ----------------
+# microG cannot own com.google.android.gms while something else claims it:
+#  1. Real GMS installed (GApps ROM) -> duplicate name, wrong signature,
+#     PackageManager silently keeps the real one.
+#  2. GMS "removed" with Canta/Shizuku (pm uninstall --user 0) -> the apk
+#     stays on the partition and the claim persists even though pm path
+#     shows nothing.
+#  3. Real GMS updated into /data -> masking the system copy is not
+#     enough, the data copy still claims the name. Must be cleaned first.
+
+REAL_GMS=0
+if command -v pm >/dev/null 2>&1; then
+  GMS_PATH=$(pm path com.google.android.gms 2>/dev/null | head -n 1 | sed 's/^package://')
+  if [ -n "$GMS_PATH" ]; then
+    # If the installed GMS already has the spoofing permission it is
+    # (almost certainly) microG from a previous flash - leave it alone.
+    if pm dump com.google.android.gms 2>/dev/null | grep -qi 'fake_package_signature'; then
+      say "- Existing microG install detected, updating in place"
+    else
+      REAL_GMS=1
+    fi
+  fi
+fi
+
+# Collect dirs to mask (global list, no command-substitution capture)
+MASK_DIRS=""
 add_mask_dir() {
   case " $MASK_DIRS " in
     *" $1 "*) return 0 ;;
@@ -78,7 +165,7 @@ add_mask_dir() {
   MASK_DIRS="$MASK_DIRS $1"
 }
 
-# Append install dirs of a package from PackageManager (active installs)
+# Partition dirs of a package from PackageManager (active installs only)
 scan_pm_package() {
   local pkg="$1" p
   p=$(pm path "$pkg" 2>/dev/null | sed 's/^package://')
@@ -86,17 +173,13 @@ scan_pm_package() {
     case "$p" in
       /system/*|/product/*|/system_ext/*|/vendor/*) add_mask_dir "${p%/*}" ;;
       /data/*)
-        say "! $pkg is a user-installed app ($p)"
-        say "  Uninstall it before flashing, or it shadows microG."
+        say "! $pkg has a copy in /data ($p)"
         ;;
     esac
   done
 }
 
-# Append leftover Google dirs on read-only partitions.
-# Canta/Shizuku "uninstalls" only remove the app for user 0 - the apk
-# stays on disk and PackageManager still honors the name claim, which
-# silently rejects microG. These leftovers must be masked too.
+# Leftover Google dirs on read-only partitions (Canta/Shizuku leftovers)
 scan_remnant_dirs() {
   local part base d
   for part in /system /product /system_ext /vendor; do
@@ -113,88 +196,49 @@ Phonesky|Vending|GooglePlay*|Play*Store*) add_mask_dir "$d" ;;
   done
 }
 
-ui_print " "
-ui_print "- MicroG Flasher"
-
-if [ -n "$MAGISK_VER_CODE" ]; then
-  if [ "$MAGISK_VER_CODE" -lt 26100 ] 2>/dev/null; then
-    abort "! Magisk v26.1+ required"
-  fi
-fi
-
-# Downloader: try curl, then wget (busybox or system)
-download() {
-  if command -v curl >/dev/null 2>&1; then
-    curl -L --fail --connect-timeout 20 -o "$2" "$1" >/dev/null 2>&1
-  elif command -v wget >/dev/null 2>&1; then
-    wget -q -O "$2" "$1" >/dev/null 2>&1
-  else
-    return 1
-  fi
+# Count /data copies of the real Google packages
+data_copies_of() {
+  pm path "$1" 2>/dev/null | sed 's/^package://' | grep -c '^/data/'
 }
 
-# Sanity check: non-empty, plausible size, and actually a zip (PK header)
-check_apk() {
-  local f="$1" min="$2"
-  [ -f "$f" ] || return 1
-  local size
-  size=$(wc -c < "$f")
-  [ "$size" -ge "$min" ] || return 1
-  [ "$(dd if="$f" bs=2 count=1 2>/dev/null)" = "PK" ] || return 1
-  return 0
-}
-
-# ---------------- module files ----------------
-
-say "- Extracting module files"
-unzip -oq "$ZIPFILE" -d "$MODPATH" \
-  'module.prop' 'system/*' 'service.sh' 'uninstall.sh' >/dev/null 2>&1
-[ -f "$MODPATH/module.prop" ] || die "Extraction failed"
-set_perm_recursive "$MODPATH" 0 0 0755 0644
-
-# ---------------- environment check ----------------
-
-SDK=$(getprop ro.build.version.sdk)
-say "- Android SDK: ${SDK:-unknown}"
-
-# Free space on /data (module lives there). GmsCore is ~110 MB.
-FREE_KB=$(df -k /data 2>/dev/null | tail -n 1 | tr -s ' ' | cut -d ' ' -f4)
-if [ -n "$FREE_KB" ] && [ "$FREE_KB" -lt 262144 ] 2>/dev/null; then
-  say "! Less than 256 MB free on /data"
-  die "microG needs ~120 MB. Free up space and retry."
-fi
-
-# ---------------- existing / leftover Google packages ----------------
-# Two cases block microG from owning com.google.android.gms:
-#  1. Real GMS still installed (GApps ROM) -> duplicate name, different
-#     signatures, PackageManager silently keeps the real one.
-#  2. GMS "removed" with Canta/Shizuku (pm uninstall --user 0) -> the apk
-#     stays on the partition and the name claim persists. pm path shows
-#     nothing, so we also scan the partitions for leftovers.
-# Fix for both: mask the dirs systemlessly (reversible - disable the
-# module to restore stock behavior).
-
-MASK=false
-
-if command -v pm >/dev/null 2>&1; then
-  for pkg in com.google.android.gms com.google.android.gsf \
-             com.google.android.gsf.login com.android.vending; do
+if [ "$REAL_GMS" = "1" ]; then
+  DATA_COPIES=0
+  for pkg in com.google.android.gms com.android.vending com.google.android.gsf; do
+    DATA_COPIES=$((DATA_COPIES + $(data_copies_of "$pkg")))
+  done
+  if [ "$DATA_COPIES" -gt 0 ]; then
+    say "! Real Google Play services has updates in /data."
+    say "  Masking the system copy is not enough - the data"
+    say "  copy keeps claiming the package and Google apps"
+    say "  would break after reboot. Clean it first:"
+    say "    1. Turn off Wi-Fi and mobile data"
+    say "    2. Settings > Apps > show system apps"
+    say "    3. For Google Play services / Play Store /"
+    say "       Google Services Framework: uninstall"
+    say "       updates, then clear storage"
+    say "    4. Reboot, then flash this module again"
+    die "Nothing was changed. Your device is untouched."
+  fi
+  for pkg in com.google.android.gms com.android.vending com.google.android.gsf; do
     scan_pm_package "$pkg"
   done
 fi
+
 scan_remnant_dirs
 
 if [ -n "$MASK_DIRS" ]; then
   say "! Google leftovers found on the system partitions"
   say "  (installed or Canta/Shizuku-removed)."
   say "  microG cannot take over while they exist."
-  say "  Mask them systemlessly? (reversible by"
-  say "  disabling this module) Vol+ = yes, Vol- = abort"
-  if choose 8; then
+  say "  Mask them systemlessly? Reversible: disable"
+  say "  this module and everything comes back."
+  if choose; then
     MASK=true
   else
     die "Aborted by user. Restore/uninstall Google packages first."
   fi
+else
+  MASK=false
 fi
 
 # ---------------- locate apks ----------------
@@ -202,43 +246,52 @@ fi
 GMS_SRC=""
 VENDING_SRC=""
 
-# 1) Pre-placed local apks (offline path)
-for d in /sdcard/MicroG-Flasher /sdcard/Download /sdcard; do
-  if [ -z "$GMS_SRC" ] && check_apk "$d/$GMS_NAME" 50000000; then
-    GMS_SRC="$d/$GMS_NAME"
-  fi
-  if [ -z "$VENDING_SRC" ] && check_apk "$d/$VENDING_NAME" 1000000; then
-    VENDING_SRC="$d/$VENDING_NAME"
-  fi
-done
-[ -n "$GMS_SRC" ] && say "- Found local GmsCore: $GMS_SRC"
-[ -n "$VENDING_SRC" ] && say "- Found local FakeStore: $VENDING_SRC"
+if find_local_apk "com.google.android.gms" 50000000; then
+  GMS_SRC="$REPLY"
+  say "- Found local GmsCore: $GMS_SRC"
+fi
+if find_local_apk "com.android.vending" 1000000; then
+  VENDING_SRC="$REPLY"
+  say "- Found local FakeStore: $VENDING_SRC"
+fi
 
-# 2) Download whatever is missing from the latest official release
 if [ -z "$GMS_SRC" ] || [ -z "$VENDING_SRC" ]; then
   say "- Fetching latest microG release info"
   JSON="$TMPDIR/release.json"
-  download "$API" "$JSON" || die "No network access (or no downloader). Pre-push apks to /sdcard/MicroG-Flasher/ and retry."
-  TAG=$(grep -oE '"tag_name":[[:space:]]*"[^"]*"' "$JSON" | head -n 1 | sed 's/.*: *"//;s/"//')
-  [ -n "$TAG" ] || die "Could not parse release info"
-  say "- microG release: $TAG"
-
-  GMS_URL=$(grep -oE '"browser_download_url":[[:space:]]*"[^"]*com\.google\.android\.gms-[0-9]+\.apk"' "$JSON" | head -n 1 | sed 's/.*: *"//;s/"//')
-  VENDING_URL=$(grep -oE '"browser_download_url":[[:space:]]*"[^"]*com\.android\.vending-[0-9]+\.apk"' "$JSON" | head -n 1 | sed 's/.*: *"//;s/"//')
-  [ -n "$GMS_URL" ] || die "GmsCore apk not found in release"
-  [ -n "$VENDING_URL" ] || die "FakeStore apk not found in release"
+  fetch "$API" "$JSON"
+  if [ -f "$JSON" ]; then
+    TAG=$(grep -oE '"tag_name":[[:space:]]*"[^"]*"' "$JSON" | head -n 1 | sed 's/.*: *"//;s/"//')
+    GMS_URL=$(grep -oE '"browser_download_url":[[:space:]]*"[^"]*com\.google\.android\.gms-[0-9]+\.apk"' "$JSON" | head -n 1 | sed 's/.*: *"//;s/"//')
+    VENDING_URL=$(grep -oE '"browser_download_url":[[:space:]]*"[^"]*com\.android\.vending-[0-9]+\.apk"' "$JSON" | head -n 1 | sed 's/.*: *"//;s/"//')
+  fi
+  # Fallback: scrape the releases page (works when the API is rate-limited)
+  if [ -z "$GMS_URL" ] || [ -z "$VENDING_URL" ]; then
+    say "- API unavailable, trying releases page"
+    HTML="$TMPDIR/releases.html"
+    fetch "$PAGE_URL" "$HTML" || true
+    if [ -f "$HTML" ]; then
+      [ -z "$TAG" ] && TAG=$(grep -oE 'releases/tag/v[0-9.]+' "$HTML" | head -n 1 | sed 's|.*/tag/||')
+      GMS_URL=$(grep -oE '/microg/GmsCore/releases/download/[^"]*com\.google\.android\.gms-[0-9]+\.apk' "$HTML" | head -n 1)
+      [ -n "$GMS_URL" ] && GMS_URL="https://github.com$GMS_URL"
+      VENDING_URL=$(grep -oE '/microg/GmsCore/releases/download/[^"]*com\.android\.vending-[0-9]+\.apk' "$HTML" | head -n 1)
+      [ -n "$VENDING_URL" ] && VENDING_URL="https://github.com$VENDING_URL"
+    fi
+  fi
+  [ -n "$TAG" ] && say "- microG release: $TAG"
+  [ -n "$GMS_URL" ] || die "GmsCore apk not found. Push it to /sdcard/MicroG-Flasher/ and retry."
+  [ -n "$VENDING_URL" ] || die "FakeStore apk not found. Push it to /sdcard/MicroG-Flasher/ and retry."
 
   if [ -z "$GMS_SRC" ]; then
     say "- Downloading GmsCore (~110 MB)"
-    download "$GMS_URL" "$TMPDIR/$GMS_NAME" || die "GmsCore download failed"
-    check_apk "$TMPDIR/$GMS_NAME" 50000000 || die "GmsCore download is corrupt"
-    GMS_SRC="$TMPDIR/$GMS_NAME"
+    fetch "$GMS_URL" "$TMPDIR/gms.apk" || die "GmsCore download failed"
+    check_apk "$TMPDIR/gms.apk" 50000000 || die "GmsCore download is corrupt"
+    GMS_SRC="$TMPDIR/gms.apk"
   fi
   if [ -z "$VENDING_SRC" ]; then
     say "- Downloading FakeStore (~4 MB)"
-    download "$VENDING_URL" "$TMPDIR/$VENDING_NAME" || die "FakeStore download failed"
-    check_apk "$TMPDIR/$VENDING_NAME" 1000000 || die "FakeStore download is corrupt"
-    VENDING_SRC="$TMPDIR/$VENDING_NAME"
+    fetch "$VENDING_URL" "$TMPDIR/vending.apk" || die "FakeStore download failed"
+    check_apk "$TMPDIR/vending.apk" 1000000 || die "FakeStore download is corrupt"
+    VENDING_SRC="$TMPDIR/vending.apk"
   fi
 fi
 
@@ -246,7 +299,17 @@ fi
 
 if [ "$MASK" = "true" ]; then
   for d in $MASK_DIRS; do
-    mask_dir "$d"
+    # module "system/" maps onto the /system partition itself;
+    # product/system_ext keep their name under system/
+    case "$d" in
+      /system/*) rel="${d#/system}" ;;
+      *)         rel="$d" ;;
+    esac
+    mdir="$MODPATH/system$rel"
+    [ -f "$mdir/.replace" ] && continue
+    mkdir -p "$mdir"
+    : > "$mdir/.replace"
+    say "- Masked $(basename "$d") ($d)"
   done
 fi
 
@@ -257,16 +320,40 @@ mkdir -p "$MODPATH/system/priv-app/GmsCore" \
          "$MODPATH/system/priv-app/FakeStore"
 cp -f "$GMS_SRC"     "$MODPATH/system/priv-app/GmsCore/GmsCore.apk"
 cp -f "$VENDING_SRC" "$MODPATH/system/priv-app/FakeStore/FakeStore.apk"
-set_perm "$MODPATH/system/priv-app/GmsCore/GmsCore.apk"  0 0 0644 \
+set_perm "$MODPATH/system/priv-app/GmsCore/GmsCore.apk" 0 0 0644 \
   u:object_r:system_file:s0
 set_perm "$MODPATH/system/priv-app/FakeStore/FakeStore.apk" 0 0 0644 \
   u:object_r:system_file:s0
 
+# Old devices (pre-dynamic partitions): /product is not a mount point, so
+# consolidate everything into system/ instead.
+if [ "$SDK" -lt 28 ] || { [ ! -d /product ] && [ ! -L /system/product ]; }; then
+  if [ -d "$MODPATH/system/product" ]; then
+    cp -a "$MODPATH/system/product/." "$MODPATH/system/" 2>/dev/null
+    rm -rf "$MODPATH/system/product"
+    say "- Legacy device: consolidated product overlay into system/"
+  fi
+fi
+
+# ---------------- signature spoofing expectation ----------------
+
+SPOOF="unknown"
+for prop in ro.calyxos.version ro.iode.version ro.e.version ro.divest.version; do
+  [ -n "$(getprop "$prop" 2>/dev/null)" ] && SPOOF="yes"
+done
+[ "$SPOOF" = "unknown" ] && [ -n "$(getprop ro.lineage.version 2>/dev/null)" ] && SPOOF="likely"
+if [ "$SPOOF" = "unknown" ]; then
+  say "! This ROM is not a known spoofing ROM. If microG"
+  say "  Self-Check shows 'System spoofs signature' red"
+  say "  after reboot, the ROM lacks signature spoofing"
+  say "  (stock ROMs need LSPosed + FakeGApps)."
+fi
+
 say "- Installed GmsCore + FakeStore"
-say "  (permission XMLs + sysconfig included)"
 say " "
-say "- Done. Reboot, then open the microG app"
-say "  and run Self-Check."
-say "  'System spoofs signature' must be green."
+say "- Done. First boot may take 2-5 minutes while"
+say "  PackageManager optimizes microG - do not force"
+say "  reboot during it."
+say "- Then open the microG app and run Self-Check."
 say " "
 echo "=== install finished OK $(date) ===" >> "$LOG" 2>/dev/null

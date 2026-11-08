@@ -26,6 +26,12 @@ adb push com.android.vending.apk     /sdcard/MicroG-Flasher/
 
 Filenames matter exactly as above. `/sdcard/Download` and `/sdcard` also work as search paths.
 
+### Safety features
+
+- **Bootloop watchdog** — if the device fails to boot twice after flashing, the module disables itself (reason in `/data/adb/microg_flasher_disabled_reason`).
+- **"Action" button** — Magisk app → module → Action: re-runs the post-boot fixup (`pm install-existing` + legacy spoofing grants) if microG is installed but invisible.
+- **/data-update guard** — if real GMS has been updated into `/data` (common on GApps ROMs that auto-update Play Store), the installer aborts untouched with cleanup instructions instead of leaving you with broken Google apps.
+
 ## ROM compatibility
 
 microG needs **signature spoofing**. Since Feb 2024, many ROMs ship "microG-tied" spoofing: they auto-spoof the official microG signature when it's installed as a priv-app — which is exactly what this module does, using only official release apks.
@@ -45,19 +51,25 @@ Every install appends a log to `/sdcard/MicroG-Flasher-install.log` — if a fla
 
 The definitive check is always the microG **Self-Check** page, not third-party signature checker apps.
 
+## Test it without a phone
+
+`tests/e2e/run.sh` simulates the whole install inside a chroot (mocked Android
+environment, real downloads) across six device states: GApps ROM, Canta-debloated,
+degoogled, existing-microG, GMS-with-data-updates, and legacy non-`/product`
+devices. See [tests/e2e/README.md](tests/e2e/README.md).
+
 ## Build
 
 ```sh
 ./build.sh   # → dist/MicroG-Flasher-vX.Y.Z.zip
 ```
 
-CI builds the zip on every `v*` tag and attaches it to the GitHub release.
+CI builds the zip on every `v*` tag and attaches it to the GitHub release
+(tags containing `beta` are marked pre-release automatically).
 
 ## Roadmap
 
 - [ ] Recovery-flashable mode (TWRP/OrangeFox, `BOOTMODE=false` path)
-- [ ] `action.sh`: update/re-check button in the Magisk app
-- [ ] Bootloop watchdog
 - [ ] Optional `-hw` GmsCore variant
 
 ## Credits
