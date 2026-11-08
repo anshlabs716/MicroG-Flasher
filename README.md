@@ -35,6 +35,7 @@ microG needs **signature spoofing**. Since Feb 2024, many ROMs ship "microG-tied
 | LineageOS (2024-02+), e/OS, CalyxOS, iodéOS, DivestOS, most LineageOS forks | ✅ Works out of the box |
 | Older custom ROMs with the classic spoofing toggle | ✅ Enable spoofing for microG in ROM settings |
 | **GApps ROM** (real Google Play services present) | ✅ The installer offers to **mask real GMS systemlessly** (Vol+ at the prompt) so microG owns `com.google.android.gms`. Reversible: disable the module and stock GMS is back. |
+| **GApps debloated with Canta/Shizuku** (`pm uninstall --user 0`) | ✅ Same masking flow — the apks stay on `/product`/`/system_ext` after a user-0 uninstall and still block microG; the installer scans the partitions directly and masks what it finds. A boot-time `pm install-existing` also clears any stuck per-user "uninstalled" flag. |
 | Stock ROM / ROM without spoofing | ⚠️ Installs, but Google-signature-checking apps break. Add spoofing with **LSPosed + FakeGApps** (Android ≤ 15). Stock Android 16: no supported path yet. |
 
 ### Debugging an install

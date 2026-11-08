@@ -51,32 +51,66 @@ choose() {
 
 # Hide a system package systemlessly by replacing its containing
 # directory with an empty .replace stub (Magisk magic mount).
-mask_package() {
-  local pkg="$1" p dir mdir
+mask_dir() {
+  local d="$1" rel mdir
+  case "$d" in
+    # module "system/" maps onto the /system partition itself;
+    # product/system_ext/vendor keep their name under system/
+    /system/*) rel="${d#/system}" ;;
+    *)         rel="$d" ;;
+  esac
+  mdir="$MODPATH/system$rel"
+  [ -f "$mdir/.replace" ] && return 0
+  mkdir -p "$mdir"
+  touch "$mdir/.replace"
+  say "- Masked $(basename "$d") ($d)"
+}
+
+# Global list (space separated) of dirs to mask. Accumulated via globals
+# on purpose - no command substitution, so say() output can never leak
+# into the list.
+MASK_DIRS=""
+
+add_mask_dir() {
+  case " $MASK_DIRS " in
+    *" $1 "*) return 0 ;;
+  esac
+  MASK_DIRS="$MASK_DIRS $1"
+}
+
+# Append install dirs of a package from PackageManager (active installs)
+scan_pm_package() {
+  local pkg="$1" p
   p=$(pm path "$pkg" 2>/dev/null | sed 's/^package://')
-  [ -n "$p" ] || return 0
-    for p in $p; do
-      case "$p" in
-        /system/*|/product/*|/system_ext/*|/vendor/*)
-          dir="${p%/*}"
-          case "$dir" in
-            # module "system/" maps onto the /system partition itself;
-            # product/system_ext/vendor keep their name under system/
-            /system/*) rel="${dir#/system}" ;;
-            *)         rel="$dir" ;;
-          esac
-          mdir="$MODPATH/system$rel"
-          [ -f "$mdir/.replace" ] && continue
-          mkdir -p "$mdir"
-          touch "$mdir/.replace"
-          say "- Masked $pkg ($dir)"
-          ;;
-        /data/*)
-          say "! $pkg is a user-installed app ($p)"
-          say "  Uninstall it before flashing, or it shadows microG."
-          ;;
-      esac
+  for p in $p; do
+    case "$p" in
+      /system/*|/product/*|/system_ext/*|/vendor/*) add_mask_dir "${p%/*}" ;;
+      /data/*)
+        say "! $pkg is a user-installed app ($p)"
+        say "  Uninstall it before flashing, or it shadows microG."
+        ;;
+    esac
+  done
+}
+
+# Append leftover Google dirs on read-only partitions.
+# Canta/Shizuku "uninstalls" only remove the app for user 0 - the apk
+# stays on disk and PackageManager still honors the name claim, which
+# silently rejects microG. These leftovers must be masked too.
+scan_remnant_dirs() {
+  local part base d
+  for part in /system /product /system_ext /vendor; do
+    for base in priv-app app; do
+      [ -d "$part/$base" ] || continue
+      for d in "$part/$base"/*; do
+        [ -d "$d" ] || continue
+        case "$(basename "$d")" in
+          GmsCore|GoogleServicesFramework|Gsf|GsfLogin|GsfProxy|\
+Phonesky|Vending|GooglePlay*|Play*Store*) add_mask_dir "$d" ;;
+        esac
+      done
     done
+  done
 }
 
 ui_print " "
@@ -130,23 +164,36 @@ if [ -n "$FREE_KB" ] && [ "$FREE_KB" -lt 262144 ] 2>/dev/null; then
   die "microG needs ~120 MB. Free up space and retry."
 fi
 
-# ---------------- existing Google packages ----------------
-# A GApps ROM's real GMS lives in /product or /system_ext. If we just add
-# microG alongside it, PackageManager sees two com.google.android.gms with
-# different signatures and silently keeps the real one. Fix: mask the real
-# packages systemlessly (reversible - disable the module to restore them).
+# ---------------- existing / leftover Google packages ----------------
+# Two cases block microG from owning com.google.android.gms:
+#  1. Real GMS still installed (GApps ROM) -> duplicate name, different
+#     signatures, PackageManager silently keeps the real one.
+#  2. GMS "removed" with Canta/Shizuku (pm uninstall --user 0) -> the apk
+#     stays on the partition and the name claim persists. pm path shows
+#     nothing, so we also scan the partitions for leftovers.
+# Fix for both: mask the dirs systemlessly (reversible - disable the
+# module to restore stock behavior).
+
+MASK=false
 
 if command -v pm >/dev/null 2>&1; then
-  if pm path com.google.android.gms >/dev/null 2>&1; then
-    say "! Real Google Play services detected"
-    say "  microG cannot take over while it exists."
-    say "  Mask it systemlessly? (reversible by"
-    say "  disabling this module) Vol+ = yes, Vol- = abort"
-    if choose 8; then
-      MASK=true
-    else
-      die "Aborted by user. Uninstall real GMS first."
-    fi
+  for pkg in com.google.android.gms com.google.android.gsf \
+             com.google.android.gsf.login com.android.vending; do
+    scan_pm_package "$pkg"
+  done
+fi
+scan_remnant_dirs
+
+if [ -n "$MASK_DIRS" ]; then
+  say "! Google leftovers found on the system partitions"
+  say "  (installed or Canta/Shizuku-removed)."
+  say "  microG cannot take over while they exist."
+  say "  Mask them systemlessly? (reversible by"
+  say "  disabling this module) Vol+ = yes, Vol- = abort"
+  if choose 8; then
+    MASK=true
+  else
+    die "Aborted by user. Restore/uninstall Google packages first."
   fi
 fi
 
@@ -198,9 +245,8 @@ fi
 # ---------------- masking (before install) ----------------
 
 if [ "$MASK" = "true" ]; then
-  for pkg in com.google.android.gms com.google.android.gsf \
-             com.google.android.gsf.login com.android.vending; do
-    mask_package "$pkg"
+  for d in $MASK_DIRS; do
+    mask_dir "$d"
   done
 fi
 
