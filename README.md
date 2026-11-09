@@ -67,9 +67,16 @@ devices. See [tests/e2e/README.md](tests/e2e/README.md).
 CI builds the zip on every `v*` tag and attaches it to the GitHub release
 (tags containing `beta` are marked pre-release automatically).
 
+## Supported installation
+
+MicroG-Flasher is a **Magisk app module**. Install it through **Magisk → Modules → Install from storage**.
+
+Recovery flashing through TWRP/OrangeFox is intentionally unsupported and is not planned. There will be no recovery-flashable package, recovery-specific installer path, or recovery-device testing.
+
+The `module/META-INF/com/google/android/` files are Magisk's standard module installer entrypoints. They are needed for installation through the Magisk app; they do not make this a recovery ZIP.
+
 ## Roadmap
 
-- [ ] Recovery-flashable mode (TWRP/OrangeFox, `BOOTMODE=false` path)
 - [ ] Optional `-hw` GmsCore variant
 
 ## Credits
