@@ -75,6 +75,11 @@ Recovery flashing through TWRP/OrangeFox is intentionally unsupported and is not
 
 The `module/META-INF/com/google/android/` files are Magisk's standard module installer entrypoints. They are needed for installation through the Magisk app; they do not make this a recovery ZIP.
 
+### Why recovery support is out of scope
+
+This is a practical development constraint, not a claim that recovery packages are technically impossible. The available Debian development machine has limited resources (8 GB RAM, a 128 GB NVMe drive, and a low-power Intel N150 processor). Maintaining separate recovery build environments, tooling, dependencies, and build outputs would put too much pressure on its storage and performance. Recovery-specific testing also adds avoidable device risk, including failed installations, data loss, or a device becoming temporarily unbootable. To keep development manageable and testing safer, work is focused on manager-installed systemless modules instead.
+
+
 ## Roadmap
 
 - [ ] Optional `-hw` GmsCore variant
