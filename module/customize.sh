@@ -100,8 +100,8 @@ say " "
 say "- MicroG Flasher"
 
 if [ "$BOOTMODE" != "true" ]; then
-  say "! Custom recovery flashing is not supported yet."
-  die "Install from the Magisk app (network needed for the download)."
+  say "! Recovery installation is intentionally unsupported."
+  die "Install through Magisk app > Modules > Install from storage."
 fi
 
 if [ -n "$MAGISK_VER_CODE" ]; then
