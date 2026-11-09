@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Packages the module/ directory into a flashable Magisk module zip.
+# Packages module/ into a ZIP for installation through the Magisk app.
 set -euo pipefail
 cd "$(dirname "$0")"
 
